@@ -110,7 +110,8 @@ class TREActor:
         self.context.setPositions(checkpoint['positions'])
         self.context.setVelocities(checkpoint['velocities'])        
 
-
+    def set_parameter(self, name, value):
+        self.context.setParameter(name, value)
     
 class TRE():
     """ 
