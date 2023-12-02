@@ -76,6 +76,26 @@ class TREActor:
         initial_positions,
         reporters
     ):
+        """
+        Parameters
+        ----------
+        topology: openmm.app.Topology
+            The topology of the system
+        system: openmm.System
+            The system
+        integrator: openmm.Integrator   
+            The integrator
+        platform_name: str
+            The name of the platform to run the simulation on. 
+            See https://docs.openmm.org/latest/api-python/generated/simtk.openmm.app.Platform.html
+            for details.
+        initial_positions: np.ndarray
+            The initial positions of the system
+        reporters: dict
+
+        """
+
+
         self.topology = topology
 
         self.system = system
