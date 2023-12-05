@@ -5,15 +5,19 @@ import numpy as np
 import openmm.unit as unit
 from random import random
 import warnings
+import math
 
 
 class TRE:
     """
-    A class for running temperature replica exchange simulation
+    A class for running temperature replica exchange simulations.
     """
 
     def __init__(self, actors):
         """Construct TRE with a list of actors, each of which is a replica.
+        The method is based on the following paper:
+        "Replica-exchange molecular dynamics method for protein folding"
+        DOI: https://doi.org/10.1016/S0009-2614(99)01123-9
 
         Parameters
         ----------
@@ -25,51 +29,57 @@ class TRE:
 
         self._kb = unit.BOLTZMANN_CONSTANT_kB * unit.AVOGADRO_CONSTANT_NA
         self._kb = self._kb.value_in_unit(unit.kilojoule_per_mole / unit.kelvin)
-        
-        self.T = ray.get(
-            [actor.get_temperature.remote() for actor in self.actors]
-        )
+
+        self.T = ray.get([actor.get_t.remote() for actor in self.actors])
         self.kbT = self._kb * np.array(self.T)
         self.one_over_kbT = 1.0 / self.kbT
-        
-        self.exchange_record = [list(range(self.num_replicas))]
-        self.exchange_rate = 0
-        self.num_exchange_attempts = 0
 
-    def _exchange_position(self):
-        energy_and_position = ray.get(
-            [actor.get_energy_and_position.remote() for actor in self.actors]
-        )
+        self.record = [list(range(self.num_replicas))]
+        self.accept_rate = {}
+        self.num_attempts = {}
+        for i in range(self.num_replicas - 1):
+            self.accept_rate[(i, i + 1)] = 0.0
+            self.num_attempts[(i, i + 1)] = 0
 
+        self._num_exchange_calls = 0
+
+    def exchange(self):
+        uqv = ray.get([actor.get_uqv.remote() for actor in self.actors])
         record = list(range(self.num_replicas))
 
-        for i in range(len(self.actors) - 1):
+        ## if self._num_exchange_calls is even, attempt exchanges between 0 and 1, 2 and 3, ...
+        ## if self._num_exchange_calls is odd, attempt exchanges between 1 and 2, 3 and 4, ...
+
+        for i in range(self._num_exchange_calls % 2, self.num_replicas - 1, 2):
             j = i + 1
-            delta = (energy_and_position[i][0] - energy_and_position[j][0]) * (
+            delta = (uqv[i][0] - uqv[j][0]) * (
                 self.one_over_kbT[i] - self.one_over_kbT[j]
             )
 
-            flag = 0                        
+            accept_flag = 0
             if random() < np.exp(delta):
-                tmp = energy_and_position[i]
-                energy_and_position[i] = energy_and_position[j]
-                energy_and_position[j] = tmp
+                accept_flag = 1
 
-                self.actors[i].update_positions.remote(energy_and_position[i][1])
+                ## exchange positions and velocities
+                ## note that the velocities need to be rescaled
+                self.actors[i].update_qv.remote(
+                    uqv[j][1], uqv[j][2] * math.sqrt(self.T[i] / self.T[j])
+                )
+                self.actors[j].update_qv.remote(
+                    uqv[i][1], uqv[i][2] * math.sqrt(self.T[j] / self.T[i])
+                )
+                record[i], record[j] = record[j], record[i]
 
-                if j == len(self.actors) - 1:
-                    self.actors[j].update_positions.remote(energy_and_position[j][1])
+            self.num_attempts[(i, j)] += 1
+            self.accept_rate[(i, j)] = (
+                self.accept_rate[(i, j)]
+                * (self.num_attempts[(i, j)] - 1)
+                / self.num_attempts[(i, j)]
+                + accept_flag / self.num_attempts[(i, j)]
+            )
 
-                tmp = record[i]
-                record[i] = record[j]
-                record[j] = tmp
-
-                flag = 1
-            
-            self.num_exchange_attempts += 1
-            self.exchange_rate = self.exchange_rate * (self.num_exchange_attempts - 1) / self.num_exchange_attempts + flag / self.num_exchange_attempts
-
-        self.exchange_record.append(record)
+        self._num_exchange_calls += 1
+        self.record.append(record)
 
     def run(self, num_steps, exchange_freq):
         if exchange_freq <= 0:
@@ -81,7 +91,7 @@ class TRE:
                 for actor in self.actors:
                     actor.run_md.remote(exchange_freq)
                 tot_steps += exchange_freq
-                self._exchange_position()
+                self.exchange()
 
 
 @ray.remote
@@ -141,7 +151,7 @@ class TREActor:
         for k, v in self.reporters.items():
             if k == "DCD":
                 reporter = app.DCDReporter(**v)
-                self.simulation.reporters.append(reporter)            
+                self.simulation.reporters.append(reporter)
 
         if self.initial_positions is not None:
             self.simulation.context.setPositions(self.initial_positions)
@@ -157,23 +167,29 @@ class TREActor:
     def run_md(self, num_steps):
         self.simulation.step(num_steps)
 
-    def get_temperature(self):
+    def get_t(self):
+        """Get the temperature of the simulation.
+
+        Returns:
+            float: The temperature of the simulation in Kelvin.
+        """
         return self.simulation.integrator.getTemperature().value_in_unit(unit.kelvin)
 
-    def get_energy_and_position(self):
+    def get_uqv(self):
+        """Get the potential energy (u), positions (q), and velocities (v) of the simulation."""
         state = self.simulation.context.getState(
-            getEnergy=True, getPositions=True
+            getEnergy=True, getPositions=True, getVelocities=True
         )
-        potential_energy = state.getPotentialEnergy().value_in_unit(
-            unit.kilojoule_per_mole
-        )
-        pos = state.getPositions()
-        pos = np.array(pos.value_in_unit(unit.nanometer))
-        return potential_energy, pos
+        u = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        q = state.getPositions()
+        q = np.array(q.value_in_unit(unit.nanometer))
+        v = state.getVelocities()
+        v = np.array(v.value_in_unit(unit.nanometer / unit.picosecond))
+        return [u, q, v]
 
-    def update_positions(self, positions):
+    def update_qv(self, positions, velocities):
         self.simulation.context.setPositions(positions)
+        self.simulation.context.setVelocities(velocities)
 
-    def minimize_energy(self, tolerance = 10, maxIterations = 0):
-        self.simulation.minimizeEnergy(tolerance = tolerance, maxIterations = maxIterations)
-        
+    def minimize_energy(self, tolerance=10, maxIterations=0):
+        self.simulation.minimizeEnergy(tolerance=tolerance, maxIterations=maxIterations)
