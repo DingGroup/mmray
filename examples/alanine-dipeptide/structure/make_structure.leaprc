@@ -1,0 +1,7 @@
+source oldff/leaprc.ff99SB
+set default PBRadii mbondi2
+
+seq = sequence{ ACE ALA NME }
+saveAmberParm seq alanine_dipeptide.prmtop alanine_dipeptide.prmcrd
+savepdb seq alanine_dipeptide.pdb
+quit

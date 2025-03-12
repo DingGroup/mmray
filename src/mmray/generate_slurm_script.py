@@ -1,22 +1,21 @@
 import argparse
 import os
-import sys
 from subprocess import Popen
 from subprocess import PIPE
 import random
 
 
-def main():
+def generate_slurm_script():
     argparser = argparse.ArgumentParser(
         "Make a slurm script for running Ray on multiple nodes"
     )
     argparser.add_argument("--job_name", type=str, default="ray")
-    argparser.add_argument("--partition", type=str, default="gpu")
+    argparser.add_argument("--partition", type=str, default="dinglab")
     argparser.add_argument("--time", type=str, default="1:00:00")
     argparser.add_argument("--num_nodes", type=int, default=1)
     argparser.add_argument("--cpus_per_node", type=int, default=1)
     argparser.add_argument("--gpus_per_node", type=int, default=0)
-    argparser.add_argument("--mem_per_node", type=int, default=1000)
+    argparser.add_argument("--mem_per_node", type=str, default="10G")
     argparser.add_argument(
         "--output",
         type=str,
@@ -32,8 +31,8 @@ def main():
     argparser.add_argument(
         "--script_path",
         type=str,
-        default="./script_to_run.py",
         help="path of the script to run",
+        required=True,
     )
 
     ## parse arguments
@@ -48,7 +47,7 @@ def main():
     directive += f"#SBATCH --tasks-per-node=1\n"
     directive += f"#SBATCH --cpus-per-task={args.cpus_per_node}\n"
     if args.gpus_per_node > 0:
-        directive += f"#SBATCH --gres=gpu:gtx1080:{args.gpus_per_node}\n"
+        directive += f"#SBATCH --gres=gpu:rtx_a5000:{args.gpus_per_node}\n"
     directive += f"#SBATCH --mem={args.mem_per_node}M\n"
 
     directive += "#SBATCH --open-mode=truncate\n"
@@ -63,7 +62,9 @@ def main():
     directive += "\n"
 
     ## commands for starting ray
-    command = "export OMP_NUM_THREADS=$SLURM_CPUS_ON_NODE\n"
+    command = "### Commands for starting ray ###\n"
+    command += "module load cuda\n"
+    command += "export OMP_NUM_THREADS=$SLURM_CPUS_ON_NODE\n"
     command += "\n"
 
     command += "nodelist=$(scontrol show hostnames $SLURM_JOB_NODELIST)\n"
@@ -80,21 +81,35 @@ def main():
     ## There are some networking caveats when using slurm with ray. See https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html#slurm-networking-caveats for details.
     ## Here to prevent the port collision, we pre-assign different port ranges to different lab members.
 
-    port = {"xqding": range(6000, 6100),
-            'xding07': range(6000, 6100)}
-    ray_client_server_port = {"xqding": range(6200, 6300),
-                            'xding07': range(6200, 6300)}
+    port = {
+        "xqding": range(6000, 6100),
+        "xding07": range(6000, 6100),
+        "adhar01": range(7000, 7100),
+    }
+    ray_client_server_port = {
+        "xqding": range(6200, 6300),
+        "xding07": range(6200, 6300),
+        "adhar01": range(7200, 7300),
+    }
 
-    node_manager_port = {"xqding": range(6400, 6500),
-                        'xding07': range(6400, 6500)}
-    object_manager_port = {"xqding": range(6600, 6700),
-                        'xding07': range(6600, 6700)}
-    runtime_env_agent_port = {"xqding": range(6800, 6900),
-                            'xding07': range(6800, 6900)}
+    node_manager_port = {
+        "xqding": range(6400, 6500),
+        "xding07": range(6400, 6500),
+        "adhar01": range(7400, 7500),
+    }
+    object_manager_port = {
+        "xqding": range(6600, 6700),
+        "xding07": range(6600, 6700),
+        "adhar01": range(7600, 7700),
+    }
+    runtime_env_agent_port = {
+        "xqding": range(6800, 6900),
+        "xding07": range(6800, 6900),
+        "adhar01": range(7800, 7900),
+    }
 
-    min_worker_port = {"xqding": 10000, 'xding07': 10000}
-    max_worker_port = {"xqding": 12000, 'xding07': 12000}
-
+    min_worker_port = {"xqding": 10000, "xding07": 10000, "adhar01": 12000}
+    max_worker_port = {"xqding": 12000, "xding07": 12000, "adhar01": 13000}
 
     user_name = os.environ["USER"]
     port = random.choice(port[user_name])
@@ -106,7 +121,6 @@ def main():
 
     min_worker_port = min_worker_port[user_name]
     max_worker_port = max_worker_port[user_name]
-
 
     command += f"port={port}\n"
     command += f"head_node_ip_with_port=$head_node_ip:$port\n"
@@ -158,11 +172,14 @@ def main():
     output = p1.communicate()[0].decode()
     PYTHON = output.strip()
 
+    command += "\n"
+    command += "#######################################\n"
+    command += "### Commands for running the script ###\n"
+    command += "#######################################\n"
     command += f"{PYTHON} -u {args.script_path}\n"
 
     print(directive + command)
 
 
 if __name__ == "__main__":
-    main()
-    
+    generate_slurm_script()
