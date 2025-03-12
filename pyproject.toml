@@ -18,6 +18,7 @@ dev = [
     "ipython>=9.0.1",
     "matplotlib>=3.10.1",
     "mdtraj>=1.10.3",
+    "mkdocs-material>=9.6.7",
 ]
 
 [project.scripts]
